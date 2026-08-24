@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kubev2v/vm-migration-detective/internal/cmdbuilder"
+	"github.com/kubev2v/vm-migration-detective/internal/tlsconfig"
 	"github.com/kubev2v/vm-migration-detective/internal/vsphere"
 	"github.com/kubev2v/vm-migration-detective/pkg/types"
 	"github.com/sirupsen/logrus"
@@ -47,12 +48,13 @@ func (i *VirtInspector) Inspect(
 	vcenterURL string,
 	username string,
 	password string,
+	tlsConfig *tlsconfig.Config,
 	diskInfo *types.SnapshotDiskInfo, // Snapshot disk info from vm_service
 ) (*types.VirtInspectorXML, error) {
 	// Try inspection with automatic retry on cold-start VDDK crash
 	// VDDK has a known bug where it crashes on first connection after container start
 	// See: https://issues.redhat.com/browse/RHEL-54377
-	result, err := i.attemptInspect(ctx, vmMoref, snapshotMoref, vcenterURL, username, password, diskInfo)
+	result, err := i.attemptInspect(ctx, vmMoref, snapshotMoref, vcenterURL, username, password, tlsConfig, diskInfo)
 	if err != nil {
 		// Check if this looks like a cold-start failure (connection refused, EOF, etc.)
 		errStr := err.Error()
@@ -65,7 +67,7 @@ func (i *VirtInspector) Inspect(
 			// Wait a moment for the system to stabilize
 			time.Sleep(2 * time.Second)
 			// Retry - VDDK should be warm now
-			result, err = i.attemptInspect(ctx, vmMoref, snapshotMoref, vcenterURL, username, password, diskInfo)
+			result, err = i.attemptInspect(ctx, vmMoref, snapshotMoref, vcenterURL, username, password, tlsConfig, diskInfo)
 			if err == nil && i.logger != nil {
 				i.logger.Info("Inspection succeeded on retry (VDDK cold-start issue worked around)")
 			}
@@ -81,6 +83,7 @@ func (i *VirtInspector) attemptInspect(
 	vcenterURL string,
 	username string,
 	password string,
+	tlsConfig *tlsconfig.Config,
 	diskInfo *types.SnapshotDiskInfo,
 ) (*types.VirtInspectorXML, error) {
 
@@ -104,6 +107,7 @@ func (i *VirtInspector) attemptInspect(
 			vcenterURL,
 			username,
 			password,
+			tlsConfig,
 		)
 		if err != nil {
 			return nil, err
@@ -126,7 +130,7 @@ func (i *VirtInspector) attemptInspect(
 		}).Debug("Using VM and snapshot morefs from caller")
 
 		// Query vSphere to get base disk paths by traversing backing chain
-		baseDiskPaths, err := i.getBaseDiskPathsFromVSphere(ctx, vcenterURL, username, password, diskInfo.VMMoref)
+		baseDiskPaths, err := i.getBaseDiskPathsFromVSphere(ctx, vcenterURL, username, password, diskInfo.VMMoref, tlsConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query base disk paths from vSphere: %w", err)
 		}
@@ -156,6 +160,7 @@ func (i *VirtInspector) attemptInspect(
 				vcenterURL,
 				username,
 				password,
+				tlsConfig,
 				i.logger,
 			)
 			if err != nil {
@@ -371,9 +376,9 @@ func parseInspectionXML(xmlData []byte) (*types.VirtInspectorXML, error) {
 }
 
 // getBaseDiskPathsFromVSphere queries vSphere to get base disk paths by traversing the backing chain
-func (i *VirtInspector) getBaseDiskPathsFromVSphere(ctx context.Context, vcenterURL, username, password, vmMoref string) ([]string, error) {
+func (i *VirtInspector) getBaseDiskPathsFromVSphere(ctx context.Context, vcenterURL, username, password, vmMoref string, tlsConfig *tlsconfig.Config) ([]string, error) {
 	// Import the vsphere package
-	vsphereClient, err := vsphere.NewClient(ctx, vcenterURL, username, password, true, i.logger)
+	vsphereClient, err := vsphere.NewClient(ctx, vcenterURL, username, password, tlsConfig, i.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to vSphere: %w", err)
 	}
